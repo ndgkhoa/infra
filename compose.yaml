@@ -1,0 +1,154 @@
+# Shared development infrastructure.
+# Project name fixed to "infra" -> containers/volumes named infra-*/infra_*.
+# Other projects connect via the external "infra-net" network (service discovery,
+# e.g. host "postgres") or via host ports (localhost:5432, ...).
+#
+# Usage:
+#   docker compose --profile all up -d      # everything
+#   docker compose --profile db up -d       # just databases
+#   docker compose --profile cache up -d    # just redis
+#   add a service: copy a block, give it a profile, done.
+name: infra
+
+# ── Shared anchors (DRY) ──────────────────────────────────────────────
+x-restart: &restart unless-stopped
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:18.4
+    container_name: infra-postgres
+    profiles: [db, all]
+    restart: *restart
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      # Authentik dropped Redis in 2025.10; it needs ~50% more PG connections.
+      POSTGRES_INITDB_ARGS: "-c max_connections=200"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./init/postgres:/docker-entrypoint-initdb.d:ro
+    networks: [infra-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MySQL ───────────────────────────────────────────────────────────
+  mysql:
+    image: mysql:9.7.1
+    container_name: infra-mysql
+    profiles: [db, all]
+    restart: *restart
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set in .env}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks: [infra-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ───────────────────────────────────────────────────────────
+  redis:
+    image: redis:8.8.0
+    container_name: infra-redis
+    profiles: [cache, all]
+    restart: *restart
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set in .env}"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks: [infra-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── RabbitMQ ────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:4.3.2-management
+    container_name: infra-rabbitmq
+    profiles: [mq, all]
+    restart: *restart
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?set in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?set in .env}
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # management UI
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks: [infra-net]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Authentik (server + worker share image/env/db) ──────────────────
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.5.3
+    container_name: infra-authentik-server
+    profiles: [auth, all]
+    restart: *restart
+    command: server
+    environment: &authentik-env
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?set in .env}
+      # Fixed wiring (not secrets): reach postgres by service name, as superuser.
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__USER: postgres
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${POSTGRES_PASSWORD}
+      AUTHENTIK_POSTGRESQL__NAME: authentik_dev
+    ports:
+      - "9000:9000"
+      - "9443:9443"
+    volumes:
+      - authentik-media:/media
+    networks: [infra-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.5.3
+    container_name: infra-authentik-worker
+    profiles: [auth, all]
+    restart: *restart
+    command: worker
+    environment: *authentik-env
+    volumes:
+      - authentik-media:/media
+    networks: [infra-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# ── Network shared with other projects ────────────────────────────────
+# Other compose files join it with:
+#   networks: { infra-net: { external: true } }
+networks:
+  infra-net:
+    name: infra-net
+
+# ── Named volumes (explicit name -> stable, fully hyphenated) ─────────
+volumes:
+  postgres-data:
+    name: infra-postgres-data
+  mysql-data:
+    name: infra-mysql-data
+  redis-data:
+    name: infra-redis-data
+  rabbitmq-data:
+    name: infra-rabbitmq-data
+  authentik-media:
+    name: infra-authentik-media
