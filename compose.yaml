@@ -5,7 +5,7 @@
 #
 # Usage:
 #   docker compose --profile all up -d      # everything
-#   docker compose --profile db up -d       # just databases
+#   docker compose --profile postgres up -d # just postgres
 #   docker compose --profile cache up -d    # just redis
 #   add a service: copy a block, give it a profile, done.
 name: infra
@@ -18,7 +18,7 @@ services:
   postgres:
     image: postgres:18.4
     container_name: infra-postgres
-    profiles: [db, all]
+    profiles: [postgres, auth, all]  # auth: authentik depends on it
     restart: *restart
     environment:
       POSTGRES_USER: postgres
@@ -41,7 +41,7 @@ services:
   mysql:
     image: mysql:9.7.1
     container_name: infra-mysql
-    profiles: [db, all]
+    profiles: [mysql, all]
     restart: *restart
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set in .env}
@@ -55,6 +55,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ── SQL Server ──────────────────────────────────────────────────────
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2025-CU11-ubuntu-24.04
+    platform: linux/amd64
+    container_name: infra-mssql
+    profiles: [mssql, all]
+    restart: *restart
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set in .env}
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    networks: [infra-net]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -b -Q 'SELECT 1' > /dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   # ── Redis ───────────────────────────────────────────────────────────
   redis:
@@ -146,6 +169,8 @@ volumes:
     name: infra-postgres-data
   mysql-data:
     name: infra-mysql-data
+  mssql-data:
+    name: infra-mssql-data
   redis-data:
     name: infra-redis-data
   rabbitmq-data:

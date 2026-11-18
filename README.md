@@ -8,14 +8,21 @@ projects share — instead of scattered `docker run` commands.
 
 | Service   | Image                          | Host port      | Profile |
 |-----------|--------------------------------|----------------|---------|
-| PostgreSQL| `postgres:18.4`                | 5432           | `db`    |
-| MySQL     | `mysql:9.7.1`                  | 3306           | `db`    |
+| PostgreSQL| `postgres:18.4`                | 5432           | `postgres` |
+| MySQL     | `mysql:9.7.1`                  | 3306           | `mysql` |
+| SQL Server| `mssql/server:2025-CU11-ubuntu-24.04` | 1433    | `mssql` |
 | Redis     | `redis:8.8.0`                  | 6379           | `cache` |
 | RabbitMQ  | `rabbitmq:4.3.2-management`    | 5672, 15672    | `mq`    |
 | Authentik | `goauthentik/server:2026.5.3`  | 9000, 9443     | `auth`  |
 
 Authentik runs a `server` + `worker` pair. Since 2025.10 it no longer uses Redis
 (cache/outpost/websocket moved to Postgres), so it depends only on PostgreSQL.
+
+SQL Server (`mcr.microsoft.com/mssql/server`, Developer edition) ships **amd64
+only**. On Apple Silicon enable Docker Desktop → Settings → General → *Use
+Rosetta for x86_64/amd64 emulation*. Fine for dev; Microsoft doesn't support
+emulation for production. Check new CUs at the
+[SQL Server 2025 build list](https://support.microsoft.com/servicing/sql/sql-server-2025/kb5005684-build-versions).
 
 ## Quick start
 
@@ -28,11 +35,13 @@ make ps                  # check status
 Start a subset by profile:
 
 ```bash
-make db        # postgres + mysql
+make postgres  # postgres
+make mysql     # mysql
+make mssql     # sql server
 make cache     # redis
 make auth      # authentik
 # or directly:
-docker compose --profile db --profile cache up -d
+docker compose --profile postgres --profile cache up -d
 ```
 
 Authentik first-run setup: open <http://localhost:9000/if/flow/initial-setup/>.
@@ -57,7 +66,9 @@ networks:
 **Option 2 — host ports.** From the host or non-networked containers use
 `localhost:5432` (host) / `host.docker.internal:5432` (container).
 
-Credentials live in `.env`: superuser `postgres`, MySQL `root`, RabbitMQ `admin`.
+Credentials live in `.env`: superuser `postgres`, MySQL `root`, SQL Server `sa`,
+RabbitMQ `admin`. SQL Server clients usually need `TrustServerCertificate=true`
+(self-signed cert).
 
 ## Adding a service
 
@@ -71,6 +82,9 @@ secrets to `.env` + `.env.example`. That's it.
   init only). Example pattern in `01-create-authentik-database.sh`.
 - **MySQL:** add an init dir + mount to `/docker-entrypoint-initdb.d`, or create
   manually: `docker exec -it infra-mysql mysql -uroot -p`.
+- **SQL Server:** no init-script dir; create manually:
+  `docker exec -it infra-mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C`
+  then `CREATE DATABASE my_app; GO`.
 
 > Init scripts only run when a volume is **empty**. To re-run them you must
 > recreate the volume (`make nuke` destroys ALL data).
